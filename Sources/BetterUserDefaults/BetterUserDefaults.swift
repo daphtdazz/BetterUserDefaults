@@ -1,11 +1,227 @@
 // The Swift Programming Language
 // https://docs.swift.org/swift-book
 
-/// A macro that produces both a value and a string containing the
-/// source code that generated the value. For example,
-///
-///     #stringify(x + y)
-///
-/// produces a tuple `(x + y, "x + y")`.
-@freestanding(expression)
-public macro stringify<T>(_ value: T) -> (T, String) = #externalMacro(module: "BetterUserDefaultsMacros", type: "StringifyMacro")
+import Foundation
+
+// MARK: - Macros
+
+// FYI there is an interesting bug see
+// https://github.com/swiftlang/swift/issues/88877
+// where you can't use the same name for a member and accessor macro. However
+// we need different ones for the properties and the class as they are both
+// peer macros.
+@attached(memberAttribute)
+@attached(peer)
+@attached(member, names: named(buildChildren), named(dataRepresentation))
+public macro BetterUserDefaults() = #externalMacro(module: "BetterUserDefaultsMacros", type: "BetterUserDefaultsMacro")
+
+@attached(accessor)
+@attached(peer, names: arbitrary)
+public macro BetterUserDefaultsAttr() = #externalMacro(module: "BetterUserDefaultsMacros", type: "BetterUserDefaultsAttr")
+
+// You can't have accessor macros that are just there to mark and return []
+// (unless you are ObservationIgnored for some reason see
+// github.com/swiftlang/swift/blame/main/lib/Macros/Sources/ObservationMacros/ObservableMacro.swift
+// ), so make this a peer macro.
+@attached(peer)
+public macro BetterUserDefaultsIgnore() = #externalMacro(
+    module: "BetterUserDefaultsMacros", type: "BetterUserDefaultsIgnore"
+)
+
+// MARK: - Types
+
+public typealias UDArrayType = [Any]
+public typealias UDDictType = [String: Any]
+
+public enum BetterUserDefaultsError: Error {
+    case invalidInitialType(String)
+}
+
+open class BetterUserDefaultsItemType: NSObject {
+    // _parent is only not set in the root
+    private let _parent: BetterUserDefaultsItemProtocol?
+    public var parent: BetterUserDefaultsItemProtocol? { _parent }
+
+    public init(parent: BetterUserDefaultsItemProtocol? = nil) {
+        self._parent = parent
+    }
+}
+// this shouldn't be public...
+public protocol BetterUserDefaultsItemProtocol: NSObject, AnyObject {
+    init?(parent: BetterUserDefaultsItemProtocol, initial: Any)
+    var parent: BetterUserDefaultsItemProtocol? { get }
+    var udRepresentation: Any { get }
+    func saveChild(_: BetterUserDefaultsItemProtocol)
+    func upgrade()
+}
+
+open class BetterUserDefaultsArray<T: BetterUserDefaultsItemProtocol>:
+    BetterUserDefaultsItemType, Collection, BetterUserDefaultsItemProtocol
+{
+    // MARK: API
+    public required init(array: UDArrayType, parent: BetterUserDefaultsItemProtocol) {
+        super.init(parent: parent)
+        _array = array.compactMap{ T(parent: self, initial: $0) }
+    }
+
+    public func newItem(at: Int, initial: Any) throws -> T {
+        guard let newItem = T(parent: self, initial: initial) else {
+            throw BetterUserDefaultsError.invalidInitialType(
+                (initial as? CustomStringConvertible)?.description ?? "<unknown type>"
+            )
+        }
+        _array.insert(newItem, at: at)
+        return newItem
+    }
+    public func newItem(initial: Any) throws -> T {
+        try newItem(at: _array.count, initial: initial)
+    }
+    public func move(from: Int, to: Int) {
+        _array.insert(_array.remove(at: from), at: to)
+        parent?.saveChild(self)
+    }
+    public func remove(at: Int) {
+        _array.remove(at: at)
+        parent?.saveChild(self)
+    }
+
+    // MARK: Collection conformance
+    private var _array: [T] = []
+    public func index(after i: Int) -> Int {
+        _array.index(after: i)
+    }
+    public subscript(position: Int) -> T {
+        get {
+            _array[position]
+        }
+    }
+    public var startIndex: Int { 0 }
+    public var endIndex: Int { _array.count }
+
+    // MARK: BetterUserDefaultsItemProtocol conformance
+    public required convenience init?(parent: BetterUserDefaultsItemProtocol, initial: Any) {
+        // if the object is not
+        guard let array = initial as? UDArrayType else {
+            return nil
+        }
+        self.init(array: array, parent: parent)
+    }
+
+    public func saveChild(_ child: any BetterUserDefaultsItemProtocol) {
+        parent!.saveChild(self)
+    }
+
+    public var udRepresentation: Any {
+        _array.map{ $0.udRepresentation }
+    }
+
+    public func upgrade() {
+        _array.forEach{ $0.upgrade() }
+    }
+}
+
+
+//@MainActor
+open class BetterUserDefaults: BetterUserDefaultsItemType, BetterUserDefaultsItemProtocol {
+
+    // User defaults is only set in the root
+    public let userDefaults: UserDefaults?
+
+    static internal let versionKey = "_prefVersion"
+
+    public typealias BetterUserDefaultsUpgrader = (inout UDDictType) -> Void
+    public typealias BetterUserDefaultsUpgraderSet = [Int: [BetterUserDefaultsUpgrader]]
+    open class var upgrades: BetterUserDefaultsUpgraderSet { [:] }
+
+    public init(defaults: UserDefaults) {
+        _dict = defaults.dictionaryRepresentation()
+        self.userDefaults = defaults
+        super.init()
+        self.buildChildren()
+    }
+
+    public required init(parent: BetterUserDefaultsItemProtocol, initial: UDDictType) {
+        _dict = initial
+        userDefaults = nil
+        super.init(parent: parent)
+        self.buildChildren()
+    }
+
+    public required convenience init?(
+        parent: any BetterUserDefaultsItemProtocol, initial: Any
+    ) {
+        guard let initialDict = initial as? UDDictType else {
+            return nil
+        }
+        self.init(parent: parent, initial: initialDict)
+    }
+    public convenience init() {
+        self.init(defaults: UserDefaults.standard)
+    }
+
+    public func upgrade() {
+        for child in _childKeyToManager.values {
+            child.upgrade()
+        }
+
+        guard let latestVersion = Self.upgrades.keys.max() else {
+            return
+        }
+        let currentVersion = _dict[Self.versionKey] as? Int ?? 0
+        for ii in currentVersion+1..<latestVersion+1 {
+            Self.upgrades[ii]!.forEach{ $0(&_dict) }
+            save(value: ii, forKey: Self.versionKey)
+        }
+    }
+
+    open var _dict: UDDictType
+    open func buildChildren() {
+        // Null-op: if subclasses have children to build the BetterUserDefaults macro
+        // will override this
+    }
+    open func dataRepresentation() -> UDDictType {
+        // No data by default: if subclasses have data properties the BetterUserDefaults
+        // macro will override this
+        return [:]
+    }
+
+    public func save(value: Any?, forKey key: String) {
+        _dict[key] = value
+        if parent == nil {
+            userDefaults!.setValue(value, forKey: key)
+        } else {
+            parent!.saveChild(self)
+        }
+    }
+
+    public func saveChild(_ child: any BetterUserDefaultsItemProtocol) {
+        guard parent == nil else {
+            parent?.saveChild(self)
+            return
+        }
+        let key = _childObjectIdToKey[ObjectIdentifier(child)]!
+        userDefaults!.set(child.udRepresentation, forKey: key)
+    }
+
+    public var udRepresentation: Any {
+        var repr = dataRepresentation()
+        for (key, child) in _childKeyToManager {
+            repr[key] = child.udRepresentation
+        }
+        return repr
+    }
+
+    // MARK: Internals
+    public var _childKeyToManager: [String: BetterUserDefaultsItemProtocol] = [:]
+    public var _childObjectIdToKey: [ObjectIdentifier: String] = [:]
+    public func _removeChildLinks(_ child: BetterUserDefaultsItemProtocol) {
+        let key = _childObjectIdToKey.removeValue(forKey: ObjectIdentifier(child))!
+        _childKeyToManager.removeValue(forKey: key)
+
+    }
+    public func _addChildLinks(_ child: BetterUserDefaultsItemProtocol, forKey key: String) {
+        _childObjectIdToKey[ObjectIdentifier(child)] = key
+        _childKeyToManager[key] = child
+
+    }
+}

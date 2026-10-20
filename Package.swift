@@ -6,16 +6,12 @@ import CompilerPluginSupport
 
 let package = Package(
     name: "BetterUserDefaults",
-    platforms: [.macOS(.v10_15), .iOS(.v13), .tvOS(.v13), .watchOS(.v6), .macCatalyst(.v13)],
+    platforms: [.macOS(.v12), .iOS(.v15), .tvOS(.v15), .watchOS(.v9), .macCatalyst(.v15)],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
             name: "BetterUserDefaults",
             targets: ["BetterUserDefaults"]
-        ),
-        .executable(
-            name: "BetterUserDefaultsClient",
-            targets: ["BetterUserDefaultsClient"]
         ),
     ],
     dependencies: [
@@ -42,19 +38,11 @@ let package = Package(
             ],
         ),
 
-        // A client of the library, which is able to use the macro in its own code.
-        .executableTarget(
-            name: "BetterUserDefaultsClient", 
-            dependencies: ["BetterUserDefaults"],
-            swiftSettings: [
-                .enableUpcomingFeature("ApproachableConcurrency"),
-            ],
-        ),
-
         // A test target used to develop the macro implementation.
         .testTarget(
             name: "BetterUserDefaultsTests",
             dependencies: [
+                "BetterUserDefaults",
                 "BetterUserDefaultsMacros",
                 .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
             ],
