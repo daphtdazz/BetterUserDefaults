@@ -120,8 +120,6 @@ open class BetterUserDefaultsArray<T: BetterUserDefaultsItemProtocol>:
     }
 }
 
-
-//@MainActor
 open class BetterUserDefaults: BetterUserDefaultsItemType, BetterUserDefaultsItemProtocol {
 
     // User defaults is only set in the root
