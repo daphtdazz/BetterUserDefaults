@@ -320,15 +320,8 @@ public struct BetterUserDefaultsAttr: AccessorMacro, PeerMacro {
             "save(value: \(newValueDataExpr), forKey: \(keyLiteral))"
         }
 
-        let optExpression = switch(declInfo.typeName) {
-        case "URL":
-            "URL(string: _dict[\(keyLiteral)] as? String ?? \"\")" as ExprSyntax
-        default:
-            "_dict[\(keyLiteral)] as? \(declInfo.typeIdentifier)" as ExprSyntax
-        }
-
         let getter = try AccessorDeclSyntax("get") {
-            "let optVal = \(optExpression)"
+            "let optVal = \(declInfo.optTypedExpr)"
             if declInfo.isOptional {
                 "let udVal = optVal"
             } else {

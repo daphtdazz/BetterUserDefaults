@@ -269,6 +269,7 @@ class ChildBetterUserDefaults: BetterUserDefaults {
 @BetterUserDefaults
 class ExampleBetterUserDefaults: BetterUserDefaults {
     var someNumber: Int = 2
+    var someDate: Date = Date.now
 
     var children: BetterUserDefaultsArray<ChildBetterUserDefaults>?
     var childrenWithDefault: BetterUserDefaultsArray<ChildBetterUserDefaults>
@@ -325,6 +326,22 @@ final class BetterUserDefaultsChildManagerTest: XCTestCase {
 
         let epm2 = ExampleBetterUserDefaults(defaults: epm.userDefaults!)
         XCTAssertEqual(epm2.childrenWithDefault[0].someChildValue, "hello, caro")
+    }
+
+    func testDates() throws {
+        let start = Date.now
+        let ud = UserDefaults.cleanUDForTests()
+        let epm = ExampleBetterUserDefaults(defaults: ud)
+        let defaultDate = epm.someDate
+        XCTAssertLessThanOrEqual(start, defaultDate)
+        let done = Date.now
+        XCTAssertLessThanOrEqual(defaultDate, done)
+
+        epm.someDate = defaultDate + TimeInterval(integerLiteral: 20)
+
+        let epm2 = ExampleBetterUserDefaults(defaults: ud)
+        XCTAssertGreaterThan(epm2.someDate, done)
+        XCTAssertEqual(epm.someDate, epm2.someDate)
     }
 }
 

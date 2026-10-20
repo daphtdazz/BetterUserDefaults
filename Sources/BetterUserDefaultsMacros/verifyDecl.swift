@@ -12,7 +12,8 @@ import SwiftSyntaxMacros
 // MARK: private helpers
 package func isAllowedType(_ type: IdentifierTypeSyntax) -> Bool {
     switch type.name.text {
-    case "URL", "Float", "Bool", "Int", "Double", "String", "Data", "BetterUserDefaultsArray", "UDArrayType":
+    case "URL", "Float", "Bool", "Int", "Double", "String", "Data", "BetterUserDefaultsArray",
+        "UDArrayType", "Date":
         return true
     default: break
     }
@@ -45,15 +46,43 @@ package struct BetterUserDefaultsItemDeclInfo {
         typeIdentifier.name.text
     }
     func dataExpr(from baseExpr: ExprSyntax) -> ExprSyntax {
-        switch(typeName) {
+        // convert the given typed expression into an expression of the underlying data type
+        // to be stored in user defaults
+        switch typeName {
         case "URL":
             if isOptional {
                 "\(baseExpr)?.absoluteString" as ExprSyntax
             } else {
                 "\(baseExpr).absoluteString" as ExprSyntax
             }
+        case "Date":
+            if isOptional {
+                "\(baseExpr) == nil ? nil : ISO8601DateFormatter().string(from: \(baseExpr)!)"
+            } else {
+                "ISO8601DateFormatter().string(from: \(baseExpr))"
+            }
         default:
             baseExpr
+        }
+    }
+    var optTypedExpr: ExprSyntax {
+        // an expression for a method on the class that returns the typed
+        // value to use for a property
+        let keyLiteral = propertyName.makeLiteralSyntax()
+        return switch(self.typeName) {
+        case "URL":
+            "URL(string: _dict[\(keyLiteral)] as? String ?? \"\")" as ExprSyntax
+        case "Date":
+            """
+            {
+                guard let dateString = _dict[\(keyLiteral)] as? String else {
+                    return nil as \(self.typeIdentifier)?
+                }
+                return ISO8601DateFormatter().date(from: dateString)
+            }()
+            """ as ExprSyntax
+        default:
+            "_dict[\(keyLiteral)] as? \(typeIdentifier)" as ExprSyntax
         }
     }
 }
@@ -63,9 +92,9 @@ extension VariableDeclSyntax {
         return self.attributes.contains(where: {
             guard
                 let attrName = $0.as(AttributeSyntax.self)?
-                .attributeName.as(IdentifierTypeSyntax.self)?
-                .name.text
-                    else {
+                    .attributeName.as(IdentifierTypeSyntax.self)?
+                    .name.text
+            else {
                 return false
             }
             return attrs.contains(attrName)
@@ -126,7 +155,9 @@ package func verifyDecl(
         typeIdentifier: typeIdentifier,
         isBetterUserDefaultsArray: typeIdentifier.name.text == "BetterUserDefaultsArray",
     )
-    if !declInfo.isBetterUserDefaultsArray && declInfo.initializerExpr == nil && !declInfo.isOptional {
+    if !declInfo.isBetterUserDefaultsArray && declInfo.initializerExpr == nil
+        && !declInfo.isOptional
+    {
         context?.diagnose(
             BetterUserDefaultsDiagnosticMessage.diagMissingNonOptionalInitializer(decl)
         )
@@ -135,4 +166,3 @@ package func verifyDecl(
 
     return declInfo
 }
-
